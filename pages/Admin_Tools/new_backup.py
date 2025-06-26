@@ -33,7 +33,6 @@ class PostgreSQLMigrator:
 
     def detect_postgresql_bin_path(self):
         """Try to auto-detect PostgreSQL binary path."""
-        # Common installation paths (Windows)
         possible_paths = [
             r'C:\Program Files\PostgreSQL\17\bin',
             r'C:\Program Files\PostgreSQL\16\bin',
@@ -42,14 +41,12 @@ class PostgreSQLMigrator:
             r'C:\Program Files\PostgreSQL\13\bin',
         ]
         
-        # Check if any of these paths exist
         for path in possible_paths:
             if os.path.isdir(path):
                 return path
                 
-        # If not found, try system PATH
         if self.is_command_available('psql'):
-            return None  # Will use system PATH
+            return None
         
         return None
 
@@ -74,7 +71,6 @@ class PostgreSQLMigrator:
                                  text=True,
                                  check=True)
             
-            # Extract version number from output
             version_line = result.stdout.split('\n')[2]
             version_match = re.search(r'PostgreSQL (\d+\.\d+)', version_line)
             if version_match:
@@ -109,6 +105,30 @@ class PostgreSQLMigrator:
                 print("- Plain SQL format (option 4 for backup)")
                 print("- Test restore in staging environment first")
         print("="*60 + "\n")
+
+    def get_valid_backup_folder(self):
+        """Get and validate a backup folder path with proper path handling."""
+        while True:
+            folder = input("Enter folder path to save backup: ").strip()
+            try:
+                # Normalize path (handles both / and \ correctly)
+                folder = os.path.normpath(folder)
+                
+                # Convert to absolute path
+                folder = os.path.abspath(folder)
+                
+                # Create directory if it doesn't exist
+                os.makedirs(folder, exist_ok=True)
+                
+                # Verify it's a directory and writable
+                if not os.path.isdir(folder):
+                    raise ValueError("Path is not a directory")
+                if not os.access(folder, os.W_OK):
+                    raise ValueError("Directory is not writable")
+                    
+                return folder
+            except Exception as e:
+                print(f"Invalid backup folder: {e}. Please try again.")
 
     def is_command_available(self, command):
         """Check if a command is available in the system PATH."""
@@ -159,15 +179,7 @@ class PostgreSQLMigrator:
             print("Invalid choice.")
             return
             
-        backup_folder = input("\nEnter folder path to save backup: ").strip()
-        if not os.path.isdir(backup_folder):
-            print("Creating backup directory...")
-            try:
-                os.makedirs(backup_folder)
-            except OSError as e:
-                print(f"Error creating directory: {e}")
-                return
-                
+        backup_folder = self.get_valid_backup_folder()
         current_date = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         
         env = os.environ.copy()
@@ -183,21 +195,17 @@ class PostgreSQLMigrator:
                     '-h', self.db_params['host'],
                     '-p', self.db_params['port'],
                     '-U', self.db_params['user'],
-                    '-F', 'c',  # Custom format
+                    '-F', 'c',
                     '-f', backup_file,
-                    '-v',  # Verbose
+                    '-v',
                     self.db_params['dbname']
                 ]
                 
                 print(f"\nCreating backup compatible with PostgreSQL {self.target_version}...")
                 subprocess.run(cmd, env=env, check=True)
-                print(f"Database backup created: {backup_file}")
+                print(f"✅ Database backup created: {backup_file}")
                 
-                # Also backup roles for this database
-                roles_file = os.path.join(backup_folder, f'roles_backup_{current_date}.sql')
-                self.backup_roles(roles_file)
-                
-            elif choice == '2':  # All databases
+            elif choice == '2':  # All databases (includes roles)
                 backup_file = os.path.join(backup_folder, f'full_cluster_backup_{current_date}.sql')
                 pg_dumpall = self.get_full_path('pg_dumpall')
                 
@@ -212,11 +220,12 @@ class PostgreSQLMigrator:
                 
                 print(f"\nCreating full cluster backup compatible with PostgreSQL {self.target_version}...")
                 subprocess.run(cmd, env=env, check=True)
-                print(f"Full cluster backup created: {backup_file}")
+                print(f"✅ Full cluster backup created: {backup_file}")
                 
             elif choice == '3':  # Roles only
                 roles_file = os.path.join(backup_folder, f'roles_backup_{current_date}.sql')
                 self.backup_roles(roles_file)
+                print(f"✅ Roles backup created: {roles_file}")
                 
             elif choice == '4':  # Single database (plain SQL)
                 backup_file = os.path.join(backup_folder, f'db_{self.db_params["dbname"]}_backup_{current_date}.sql')
@@ -227,22 +236,18 @@ class PostgreSQLMigrator:
                     '-h', self.db_params['host'],
                     '-p', self.db_params['port'],
                     '-U', self.db_params['user'],
-                    '-F', 'p',  # Plain text SQL format
+                    '-F', 'p',
                     '-f', backup_file,
-                    '-v',  # Verbose
+                    '-v',
                     self.db_params['dbname']
                 ]
                 
                 print(f"\nCreating SQL-format backup compatible with PostgreSQL {self.target_version}...")
                 subprocess.run(cmd, env=env, check=True)
-                print(f"Database backup created: {backup_file}")
-                
-                # Also backup roles for this database
-                roles_file = os.path.join(backup_folder, f'roles_backup_{current_date}.sql')
-                self.backup_roles(roles_file)
+                print(f"✅ Database backup created: {backup_file}")
                 
         except subprocess.CalledProcessError as e:
-            print(f"Backup failed: {e}")
+            print(f"❌ Backup failed: {e}")
             return False
             
         return True
@@ -265,13 +270,12 @@ class PostgreSQLMigrator:
         
         print("\nBacking up roles...")
         subprocess.run(cmd, env=env, check=True)
-        print(f"Roles backup created: {output_file}")
 
     def detect_backup_version(self, backup_file):
         """Detect PostgreSQL version from backup file."""
         self.source_version = None
         try:
-            if backup_file.endswith('.dump'):  # Custom format
+            if backup_file.endswith('.dump'):
                 pg_restore = self.get_full_path('pg_restore')
                 result = subprocess.run(
                     [pg_restore, '--list', backup_file],
@@ -283,9 +287,9 @@ class PostgreSQLMigrator:
                     if 'built for PostgreSQL' in line:
                         self.source_version = line.split()[-1]
                         break
-            else:  # SQL format
+            else:
                 with open(backup_file, 'r', encoding='utf-8') as f:
-                    for line in f.readlines()[:20]:  # Check first 20 lines
+                    for line in f.readlines()[:20]:
                         if 'PostgreSQL' in line and 'dump' in line:
                             version_part = line.split('PostgreSQL ')[1]
                             self.source_version = version_part.split()[0].strip(')')
@@ -307,16 +311,14 @@ class PostgreSQLMigrator:
             print("Invalid choice.")
             return
             
-        backup_file = input("\nEnter path to backup file: ").strip()
+        backup_file = self.get_valid_path("Enter path to backup file: ")
         if not os.path.isfile(backup_file):
             print("Backup file not found.")
             return
             
-        # Detect backup version
         self.detect_backup_version(backup_file)
         self.display_version_info("restore")
         
-        # Confirm if there's a major version difference
         if self.source_version and self.target_version:
             source_major = self.source_version.split('.')[0]
             target_major = self.target_version.split('.')[0]
@@ -330,7 +332,7 @@ class PostgreSQLMigrator:
         env['PGPASSWORD'] = self.db_params['password']
         
         try:
-            if choice == '1':  # Single database
+            if choice == '1':
                 print("\nDatabase restore options:")
                 print("1. Clean restore (drop existing database)")
                 print("2. Restore to new database")
@@ -348,7 +350,7 @@ class PostgreSQLMigrator:
                         '-U', self.db_params['user'],
                         '--clean',
                         '--create',
-                        '-d', 'postgres',  # Connect to default DB to drop/create
+                        '-d', 'postgres',
                         '-v',
                         backup_file
                     ]
@@ -362,7 +364,6 @@ class PostgreSQLMigrator:
                         print("Database name cannot be empty.")
                         return
                         
-                    # First create the database
                     createdb = self.get_full_path('createdb')
                     cmd = [
                         createdb,
@@ -375,7 +376,6 @@ class PostgreSQLMigrator:
                     print(f"\nCreating new database '{db_name}'...")
                     subprocess.run(cmd, env=env, check=True)
                     
-                    # Now restore to the new database
                     pg_restore = self.get_full_path('pg_restore')
                     cmd = [
                         pg_restore,
@@ -394,24 +394,10 @@ class PostgreSQLMigrator:
                     print("Invalid choice.")
                     return
                     
-                # Restore roles if available
-                if backup_file.endswith('.dump'):
-                    roles_file = os.path.join(
-                        os.path.dirname(backup_file),
-                        f"roles_backup_{os.path.basename(backup_file).split('_backup_')[1].replace('.dump', '.sql')}"
-                    )
-                else:
-                    roles_file = backup_file.replace('.sql', '_roles.sql')
-                    
-                if os.path.exists(roles_file):
-                    self.restore_roles(roles_file)
-                    
-                # Run post-restore actions
                 self.post_restore_actions(db_name if restore_choice == '2' else self.db_params['dbname'])
-                
                 print("\n✅ Database restore completed successfully.")
                 
-            elif choice == '2':  # Full cluster
+            elif choice == '2':
                 psql = self.get_full_path('psql')
                 cmd = [
                     psql,
@@ -424,13 +410,10 @@ class PostgreSQLMigrator:
                 
                 print("\nRestoring full cluster backup...")
                 subprocess.run(cmd, env=env, check=True)
-                
-                # Run post-restore actions for all databases
                 self.post_restore_full_cluster()
-                
                 print("\n✅ Full cluster restore completed successfully.")
                 
-            elif choice == '3':  # Roles only
+            elif choice == '3':
                 self.restore_roles(backup_file)
                 print("\n✅ Roles restore completed successfully.")
                 
@@ -439,6 +422,21 @@ class PostgreSQLMigrator:
             return False
             
         return True
+
+    def get_valid_path(self, prompt):
+        """Safely get and validate a filesystem path."""
+        while True:
+            path = input(prompt).strip()
+            try:
+                path = os.path.normpath(path)
+                path = os.path.abspath(path)
+                
+                if not os.path.exists(path):
+                    raise ValueError("Path does not exist")
+                    
+                return path
+            except Exception as e:
+                print(f"Invalid path: {e}. Please try again.")
 
     def restore_roles(self, roles_file):
         """Restore database roles from backup."""
@@ -468,7 +466,6 @@ class PostgreSQLMigrator:
         psql = self.get_full_path('psql')
         
         try:
-            # Run ANALYZE to update statistics
             print("- Updating database statistics (ANALYZE)...")
             cmd = [
                 psql,
@@ -480,7 +477,6 @@ class PostgreSQLMigrator:
             ]
             subprocess.run(cmd, env=env, check=True)
             
-            # Run REINDEX on the entire database
             print("- Rebuilding indexes (REINDEX)...")
             cmd = [
                 psql,
@@ -492,7 +488,6 @@ class PostgreSQLMigrator:
             ]
             subprocess.run(cmd, env=env, check=True)
             
-            # Test connectivity
             print("- Testing database connectivity...")
             cmd = [
                 psql,
@@ -512,7 +507,6 @@ class PostgreSQLMigrator:
             else:
                 print("  ❌ Connectivity test failed")
                 
-            # Check for extension compatibility
             print("\nChecking extensions...")
             cmd = [
                 psql,
@@ -536,7 +530,6 @@ class PostgreSQLMigrator:
         psql = self.get_full_path('psql')
         
         try:
-            # Get list of all databases
             cmd = [
                 psql,
                 '-h', self.db_params['host'],
@@ -544,7 +537,7 @@ class PostgreSQLMigrator:
                 '-U', self.db_params['user'],
                 '-d', 'postgres',
                 '-c', "SELECT datname FROM pg_database WHERE datistemplate = false;",
-                '-t'  # Tuples only
+                '-t'
             ]
             
             result = subprocess.run(cmd, env=env, 
@@ -555,7 +548,6 @@ class PostgreSQLMigrator:
             
             databases = [db.strip() for db in result.stdout.splitlines() if db.strip()]
             
-            # Run maintenance on each database
             for db in databases:
                 if db not in ['postgres', 'template0', 'template1']:
                     print(f"\nMaintaining database: {db}")
@@ -598,7 +590,6 @@ class PostgreSQLMigrator:
 if __name__ == '__main__':
     migrator = PostgreSQLMigrator()
     
-    # Check if PostgreSQL tools are available
     if migrator.pg_bin_path is None and not migrator.is_command_available('psql'):
         print("Error: PostgreSQL binaries not found. Please ensure PostgreSQL is installed and in your PATH.")
         sys.exit(1)
