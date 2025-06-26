@@ -15,9 +15,8 @@ class PostgreSQLMigrator:
             'port': '5432'
         }
         
-        # Version information
-        self.source_version = None
-        self.target_version = None
+        # Track test database
+        self.test_db_name = None
         
         # Try to auto-detect PostgreSQL binary paths
         self.pg_bin_path = self.detect_postgresql_bin_path()
@@ -518,6 +517,28 @@ class PostgreSQLMigrator:
             ]
             subprocess.run(cmd, env=env, check=True)
             
+            # Verify tables were restored
+            print("\nVerifying tables...")
+            cmd = [
+                psql,
+                '-h', self.db_params['host'],
+                '-p', self.db_params['port'],
+                '-U', self.db_params['user'],
+                '-d', db_name,
+                '-c', "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');",
+                '-t'
+            ]
+            result = subprocess.run(cmd, env=env,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,
+                                  text=True,
+                                  check=True)
+            table_count = int(result.stdout.strip())
+            print(f"  Found {table_count} tables in restored database")
+            
+            if table_count == 0:
+                raise Exception("No tables found in restored database!")
+            
         except subprocess.CalledProcessError as e:
             print(f"Post-restore action failed: {e}")
 
@@ -556,24 +577,222 @@ class PostgreSQLMigrator:
         except subprocess.CalledProcessError as e:
             print(f"Failed to run full cluster post-restore actions: {e}")
 
+    def database_exists(self, dbname):
+        """Check if a database exists."""
+        env = os.environ.copy()
+        env['PGPASSWORD'] = self.db_params['password']
+        psql = self.get_full_path('psql')
+        
+        cmd = [
+            psql,
+            '-h', self.db_params['host'],
+            '-p', self.db_params['port'],
+            '-U', self.db_params['user'],
+            '-lqt'
+        ]
+        
+        try:
+            result = subprocess.run(cmd, env=env, 
+                                  stdout=subprocess.PIPE, 
+                                  stderr=subprocess.PIPE,
+                                  text=True,
+                                  check=True)
+            databases = [line.split('|')[0].strip() 
+                        for line in result.stdout.splitlines()]
+            return dbname in databases
+        except subprocess.CalledProcessError:
+            return False
+
+    def test_restore(self):
+        """Option 5: Test restore to a new database with verification"""
+        print("\n" + "="*50)
+        print(" TEST RESTORE TO NEW DATABASE")
+        print("="*50)
+        
+        # Get backup file
+        backup_file = self.get_valid_path("Enter path to backup file: ")
+        if not os.path.isfile(backup_file):
+            print("Backup file not found.")
+            return
+        
+        # Get test database name
+        self.test_db_name = input("\nEnter name for test database: ").strip()
+        if not self.test_db_name:
+            print("Database name cannot be empty.")
+            return
+            
+        # Verify it doesn't exist
+        if self.database_exists(self.test_db_name):
+            print(f"Database '{self.test_db_name}' already exists!")
+            return
+
+        # Perform restore
+        env = os.environ.copy()
+        env['PGPASSWORD'] = self.db_params['password']
+        
+        try:
+            # Create database
+            createdb = self.get_full_path('createdb')
+            cmd = [
+                createdb,
+                '-h', self.db_params['host'],
+                '-p', self.db_params['port'],
+                '-U', self.db_params['user'],
+                self.test_db_name
+            ]
+            print(f"\nCreating test database '{self.test_db_name}'...")
+            subprocess.run(cmd, env=env, check=True)
+            
+            # Restore based on backup type
+            if backup_file.endswith('.dump'):
+                # Custom format backup
+                pg_restore = self.get_full_path('pg_restore')
+                cmd = [
+                    pg_restore,
+                    '-h', self.db_params['host'],
+                    '-p', self.db_params['port'],
+                    '-U', self.db_params['user'],
+                    '-d', self.test_db_name,
+                    '-v',
+                    '--no-owner',
+                    '--no-privileges',
+                    backup_file
+                ]
+            else:
+                # SQL format backup
+                psql = self.get_full_path('psql')
+                cmd = [
+                    psql,
+                    '-h', self.db_params['host'],
+                    '-p', self.db_params['port'],
+                    '-U', self.db_params['user'],
+                    '-d', self.test_db_name,
+                    '-v', 'ON_ERROR_STOP=1',
+                    '-f', backup_file,
+                    '--echo-queries'
+                ]
+            
+            print(f"\nRestoring to test database '{self.test_db_name}'...")
+            result = subprocess.run(cmd, env=env, check=True, 
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,
+                                  text=True)
+            
+            # Verify tables were created
+            if not self.verify_restore(self.test_db_name):
+                raise Exception("Restore verification failed - tables missing")
+            
+            # Run post-restore checks
+            self.post_restore_actions(self.test_db_name)
+            
+            print(f"\n✅ Test restore completed successfully to '{self.test_db_name}'")
+            print(f"Use 'psql -h {self.db_params['host']} -U {self.db_params['user']} -d {self.test_db_name}' to inspect")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"\n❌ Restore failed with error: {e}")
+            if e.stderr:
+                print("Error details:")
+                print(e.stderr)
+            self.test_db_name = None
+        except Exception as e:
+            print(f"\n❌ Verification failed: {e}")
+            self.test_db_name = None
+
+    def verify_restore(self, dbname):
+        """Verify tables exist after restore"""
+        env = os.environ.copy()
+        env['PGPASSWORD'] = self.db_params['password']
+        psql = self.get_full_path('psql')
+        
+        try:
+            # Count tables in the database
+            cmd = [
+                psql,
+                '-h', self.db_params['host'],
+                '-p', self.db_params['port'],
+                '-U', self.db_params['user'],
+                '-d', dbname,
+                '-c', "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');",
+                '-t'
+            ]
+            
+            result = subprocess.run(cmd, env=env,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE,
+                                  text=True,
+                                  check=True)
+            
+            table_count = int(result.stdout.strip())
+            print(f"\nFound {table_count} tables in restored database")
+            
+            if table_count == 0:
+                # Try to get error details if any
+                cmd = [
+                    psql,
+                    '-h', self.db_params['host'],
+                    '-p', self.db_params['port'],
+                    '-U', self.db_params['user'],
+                    '-d', dbname,
+                    '-c', "SELECT * FROM pg_stat_activity;",
+                    '-t'
+                ]
+                subprocess.run(cmd, env=env, check=True)
+                return False
+                
+            return table_count > 0
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Verification query failed: {e}")
+            if e.stderr:
+                print("Error details:")
+                print(e.stderr)
+            return False
+
+    def cleanup_test_db(self):
+        """Option 6: Cleanup test database"""
+        if not self.test_db_name:
+            print("No test database to cleanup.")
+            return
+            
+        confirm = input(f"\n⚠️  Delete test database '{self.test_db_name}'? (y/n): ").lower()
+        if confirm != 'y':
+            return
+            
+        env = os.environ.copy()
+        env['PGPASSWORD'] = self.db_params['password']
+        
+        try:
+            dropdb = self.get_full_path('dropdb')
+            cmd = [
+                dropdb,
+                '-h', self.db_params['host'],
+                '-p', self.db_params['port'],
+                '-U', self.db_params['user'],
+                self.test_db_name
+            ]
+            print(f"\nDeleting test database '{self.test_db_name}'...")
+            subprocess.run(cmd, env=env, check=True)
+            print("✅ Test database deleted successfully.")
+            self.test_db_name = None
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to delete test database: {e}")
+
     def main_menu(self):
-        """Display main menu and handle user choices."""
+        """Display main menu with new test options"""
         while True:
             print("\n" + "="*50)
             print(" POSTGRESQL MIGRATION TOOL")
             print("="*50)
-            if self.target_version:
-                print(f" Target Server Version: {self.target_version}")
-            if hasattr(self, 'source_version') and self.source_version:
-                print(f" Last Backup Version: {self.source_version}")
-            print("="*50)
-            
             print("\n1. Configure connection parameters")
             print("2. Create backup")
             print("3. Restore backup")
-            print("4. Exit\n")
+            print("4. Exit")
+            print("5. Test Restore (to new database)")
+            if self.test_db_name:
+                print(f"6. Cleanup Test Database ({self.test_db_name})")
+            print("\nCurrent Target Version:", self.target_version or "Unknown")
             
-            choice = input("Enter your choice: ").strip()
+            choice = input("\nEnter your choice: ").strip()
             
             if choice == '1':
                 self.configure_parameters()
@@ -584,6 +803,10 @@ class PostgreSQLMigrator:
             elif choice == '4':
                 print("Exiting...")
                 break
+            elif choice == '5':
+                self.test_restore()
+            elif choice == '6' and self.test_db_name:
+                self.cleanup_test_db()
             else:
                 print("Invalid choice. Please try again.")
 
