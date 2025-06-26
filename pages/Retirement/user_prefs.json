@@ -1,0 +1,16 @@
+{
+    "current_age": 37,
+    "retirement_age": 60,
+    "life_expectancy": 90,
+    "current_monthly_expenses": 40000,
+    "recurring_annual_expenses": 30000,
+    "annual_expenses_growth": 5.0,
+    "post_retirement_inflation": 5.0,
+    "equity_return": 10.0,
+    "debt_return": 6.0,
+    "auto_load": true,
+    "current_equity": 10000625.549756998,
+    "current_debt": 1500000.0,
+    "actual_equity": 200000,
+    "actual_debt": 5000
+}
