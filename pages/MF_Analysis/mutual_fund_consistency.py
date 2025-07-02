@@ -268,8 +268,8 @@ def analyze_fund_period(fund_code, fund_name, benchmark_nav, period_years):
         return None
 
 def main():
-    st.set_page_config(page_title="Fund Rolling Returns Analysis", layout="wide")
-    st.title("Mutual Fund Rolling Returns Analysis")
+    st.set_page_config(page_title="Mutual Fund Consistency Analysis", layout="wide")
+    st.title("Mutual Fund Consistency Analysis")
     
     # Get fund categories
     categories = get_fund_categories()
