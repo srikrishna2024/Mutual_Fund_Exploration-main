@@ -128,7 +128,7 @@ unrealized_stcg = 0
 
 st.subheader("📈 Tax Optimization Analysis")
 
-# Process each fund
+# Process each fund for REALIZED gains first
 for fund in df['Fund Name'].unique():
     fund_buys = buys[buys['Fund Name'] == fund].copy()
     fund_sells = sells[sells['Fund Name'] == fund].copy()
@@ -188,27 +188,36 @@ for fund in df['Fund Name'].unique():
     if not fund_fifo:
         continue
         
+    # Calculate unrealized gains for ALL remaining lots (for display purposes)
     for lot in fund_fifo:
         holding_period = (datetime.today() - lot['Date']).days
         code = lot.get('Code', None)
         current_nav = latest_nav_map.get(code, lot['NAV'])
         gain = lot['Units'] * (current_nav - lot['NAV'])
-        
-        if gain < 0:
-            carry_forward_opportunities.append({
-                'Fund Name': fund,
-                'Purchase Date': lot['Date'].date(),
-                'Units': lot['Units'],
-                'NAV at Purchase': lot['NAV'],
-                'Current NAV': current_nav,
-                'Unrealized Loss': gain,
-                'Loss Amount': abs(gain)
-            })
-        
+
         if holding_period > 365:
             unrealized_ltcg += gain
         else:
             unrealized_stcg += gain
+    
+    # Add to carry_forward_opportunities if the oldest lot is at a loss (for loss harvesting)
+    oldest_lot = fund_fifo[0]  # Only consider the oldest lot for loss harvesting
+    holding_period = (datetime.today() - oldest_lot['Date']).days
+    code = oldest_lot.get('Code', None)
+    current_nav = latest_nav_map.get(code, oldest_lot['NAV'])
+    gain = oldest_lot['Units'] * (current_nav - oldest_lot['NAV'])
+    
+    if gain < 0:
+        carry_forward_opportunities.append({
+            'Fund Name': fund,
+            'Purchase Date': oldest_lot['Date'].date(),
+            'Units': oldest_lot['Units'],
+            'NAV at Purchase': oldest_lot['NAV'],
+            'Current NAV': current_nav,
+            'Unrealized Loss': gain,
+            'Loss Amount': abs(gain),
+            'Holding Period (days)': holding_period
+        })
 
 # Corrected set-off calculations
 def calculate_net_gains(gains_df):
@@ -316,10 +325,6 @@ if results:
         fig.update_traces(marker_line_width=0.5, marker_line_color='black')
         st.plotly_chart(fig, use_container_width=True)
 
-# [Rest of your original code remains unchanged...]
-# Continue with all remaining sections exactly as in your original script
-# Including Unrealized Gains, Upcoming Long-Term Eligibility, Tax Loss Harvesting, etc.
-
 # Unrealized gains section
 st.subheader("📊 Unrealized Capital Gains")
 col1, col2 = st.columns(2)
@@ -328,7 +333,6 @@ with col1:
 with col2:
     st.metric("Unrealized STCG (Still Short-Term)", f"₹{unrealized_stcg:,.1f}")
 
-# [Continue with all other sections exactly as in your original script]
 # Upcoming long-term eligibility (FIFO-aware)
 st.subheader("🕒 Upcoming Long-Term Eligibility")
 today = datetime.today()
@@ -431,18 +435,119 @@ else:
     else:
         st.info("ℹ️ All purchased units have been sold. No units available for LTCG analysis.")
 
-# Tax loss harvesting opportunities
-if carry_forward_opportunities:
-    st.subheader("📉 Tax Loss Harvesting Opportunities")
-    st.info("💡 These units are currently at a loss. Consider redeeming and re-investing to book losses for tax benefit:")
-    opportunities_df = pd.DataFrame(carry_forward_opportunities)
-    opportunities_df = opportunities_df.sort_values('Loss Amount', ascending=False)
-    st.dataframe(opportunities_df, use_container_width=True)
+# CORRECTED Tax Loss Harvesting - FIFO-Compliant Version
+st.subheader("📉 Tax Loss Harvesting Opportunities")
+
+# Get current holdings after accounting for all sales (FIFO)
+fifo_harvestable_losses = []
+
+for fund in df['Fund Name'].unique():
+    fund_buys = buys[buys['Fund Name'] == fund].copy()
+    fund_sells = sells[sells['Fund Name'] == fund].copy()
+    fund_buys.sort_values('Date', inplace=True)
+    fund_sells.sort_values('Date', inplace=True)
+
+    # Create FIFO queue for this fund
+    available_cols = [col for col in ['Date', 'NAV', 'Units', 'Code'] if col in fund_buys.columns]
+    fund_fifo = fund_buys[available_cols].to_dict('records')
+
+    # Process ALL sell transactions to get the ACTUAL remaining FIFO queue
+    for _, sell in fund_sells.iterrows():
+        units_to_sell = sell['Units']
+        
+        # Process the sale against FIFO queue
+        while units_to_sell > 0 and fund_fifo:
+            lot = fund_fifo[0]  # Always work with the first (oldest) lot
+            
+            if lot['Units'] <= units_to_sell:
+                # Entire lot is sold
+                units_to_sell -= lot['Units']
+                fund_fifo.pop(0)  # Remove the entire lot
+            else:
+                # Partial lot sale - reduce units in the lot
+                lot['Units'] -= units_to_sell
+                units_to_sell = 0
+
+    # NOW CHECK ONLY THE REMAINING UNITS IN FIFO ORDER
+    if fund_fifo:  # If there are any unsold units remaining
+        oldest_unsold_lot = fund_fifo[0]  # ONLY the first (oldest) remaining lot
+        
+        code = oldest_unsold_lot.get('Code', None)
+        current_nav = latest_nav_map.get(code, oldest_unsold_lot['NAV'])
+        purchase_nav = oldest_unsold_lot['NAV']
+        remaining_units = oldest_unsold_lot['Units']
+        
+        # Calculate gain/loss for the remaining units in the oldest lot
+        total_gain = remaining_units * (current_nav - purchase_nav)
+        
+        # Only add to harvestable if it's actually a loss
+        if total_gain < 0:  
+            fifo_harvestable_losses.append({
+                'Fund Name': fund,
+                'Purchase Date': oldest_unsold_lot['Date'].date(),
+                'Units': remaining_units,
+                'NAV at Purchase': purchase_nav,
+                'Current NAV': current_nav,
+                'Unrealized Loss': total_gain,
+                'Loss Amount': abs(total_gain),
+                'Holding Period (days)': (datetime.now() - oldest_unsold_lot['Date']).days,
+                'FIFO Position': 'Next in FIFO Queue (Harvestable)',
+                'Recommendation': 'Can be harvested immediately - these are the actual next units to be sold'
+            })
+
+# Display results
+if fifo_harvestable_losses:
+    st.warning("⚠️ **FIFO-Compliant Tax Loss Harvesting Opportunities**")
+    st.info("💡 These are the ACTUAL units that would be sold first under FIFO rules and are currently at a loss:")
     
-    total_loss_opportunity = opportunities_df['Loss Amount'].sum()
-    st.metric("Total Loss Harvesting Potential", f"₹{total_loss_opportunity:,.1f}")
+    harvestable_df = pd.DataFrame(fifo_harvestable_losses)
+    harvestable_df = harvestable_df.sort_values('Loss Amount', ascending=False)
+    
+    st.dataframe(harvestable_df[[
+        'Fund Name', 'Purchase Date', 'Units', 'NAV at Purchase', 
+        'Current NAV', 'Loss Amount', 'Holding Period (days)', 'Recommendation'
+    ]], use_container_width=True)
+    
+    total_harvestable = harvestable_df['Loss Amount'].sum()
+    st.success(f"🎯 **Immediately Harvestable Losses:** ₹{total_harvestable:,.1f}")
+    
+    st.markdown("""
+    **✅ Why These Units Can Be Harvested:**
+    - These are the **actual remaining oldest units** in each fund (following FIFO)
+    - They would be sold **first** if you redeem from these funds
+    - No profitable older units exist that would be sold before these
+    
+    **🔍 FIFO Verification:**
+    - All previous sales have been properly accounted for
+    - These units are guaranteed to be the next ones sold
+    - No need to sell any profitable units first
+    """)
+    
+elif carry_forward_opportunities:
+    # If there are no FIFO-compliant opportunities but there are potential losses in the portfolio
+    st.info("ℹ️ **Potential Tax Loss Harvesting Opportunities (Non-FIFO):**")
+    st.warning("⚠️ Note: These losses would only be harvestable after selling any older profitable units first")
+    
+    potential_loss_df = pd.DataFrame(carry_forward_opportunities)
+    potential_loss_df = potential_loss_df.sort_values('Loss Amount', ascending=False)
+    
+    st.dataframe(potential_loss_df[[
+        'Fund Name', 'Purchase Date', 'Units', 'NAV at Purchase', 
+        'Current NAV', 'Loss Amount', 'Holding Period (days)'
+    ]], use_container_width=True)
+    
+    total_potential_loss = potential_loss_df['Loss Amount'].sum()
+    st.info(f"💡 Total potential losses in portfolio: ₹{total_potential_loss:,.1f}")
+    
+    st.markdown("""
+    **⚠️ Important Considerations:**
+    - These losses are not immediately harvestable under FIFO rules
+    - You would need to sell older profitable units first to access these losses
+    - Consider whether the tax benefit outweighs the capital gains from selling profitable units
+    """)
 else:
-    st.success("✅ No current tax loss harvesting opportunities found.")
+    st.success("✅ No tax loss harvesting opportunities found.")
+    st.info("💡 The oldest remaining units in your funds are either profitable or already sold.")
 
 # LTCG Exemption Tracker (₹1.25 lakh limit)
 st.subheader("🎯 LTCG Exemption Tracker")
@@ -515,7 +620,7 @@ elif excess_ltcg > 0:
     st.error(f"💸 **Tax Impact:** ₹{tax_paid:,.1f} LTCG tax paid/payable (12.5% on excess amount)")
     
     # Strategic recommendations for over-limit scenarios
-    st.warning("🚫 **STOP SELLING RECOMMENDATION:**")
+    st.warning("🚫 **RECOMMENDATION: STOP SELLING IN THIS FINANCIAL YEAR UNLESS EMERGENCY/GOALS ACHIEVED**")
     st.markdown(f"""
     **Immediate Actions:**
     - 🛑 **Avoid further LTCG realizations** this financial year unless absolutely necessary
@@ -524,8 +629,8 @@ elif excess_ltcg > 0:
     """)
     
     # Calculate potential tax loss harvesting benefit
-    if carry_forward_opportunities:
-        harvestable_losses = sum([abs(opp['Unrealized Loss']) for opp in carry_forward_opportunities])
+    if fifo_harvestable_losses or carry_forward_opportunities:
+        harvestable_losses = sum([abs(opp['Unrealized Loss']) for opp in (fifo_harvestable_losses + carry_forward_opportunities)])
         potential_offset = min(harvestable_losses, excess_ltcg)
         tax_savings = potential_offset * 0.125
         
@@ -673,11 +778,11 @@ if not elss_funds.empty:
 
 # Tax Loss Harvesting Calendar
 st.subheader("📅 Tax Planning Calendar")
-if carry_forward_opportunities:
+if fifo_harvestable_losses or carry_forward_opportunities:
     st.info("💡 Best months for tax loss harvesting: December-January (before financial year end)")
     
     # Calculate potential tax savings
-    total_harvestable_loss = sum([abs(opp['Unrealized Loss']) for opp in carry_forward_opportunities])
+    total_harvestable_loss = sum([abs(opp['Unrealized Loss']) for opp in (fifo_harvestable_losses + carry_forward_opportunities)])
     potential_tax_benefit = min(total_harvestable_loss, current_fy_ltcg) * 0.125
     
     col1, col2 = st.columns(2)
