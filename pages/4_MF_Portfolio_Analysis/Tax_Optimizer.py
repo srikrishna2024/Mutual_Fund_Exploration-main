@@ -221,6 +221,22 @@ for fund in df['Fund Name'].unique():
 
 # Corrected set-off calculations
 def calculate_net_gains(gains_df):
+    """
+    Apply tax set-off rules to a DataFrame of capital gains and calculate net gains and carry-forward losses for each financial year.
+    Parameters:
+        gains_df (pd.DataFrame): DataFrame containing at least the columns 'Financial Year', 'Gain Type' (e.g., 'STCG', 'LTCG'), and 'Gain' (numeric).
+    Returns:
+        pd.DataFrame: A summary DataFrame indexed by 'Financial Year' with columns:
+            - 'STCG': Total short-term capital gains for the year.
+            - 'LTCG': Total long-term capital gains for the year.
+            - 'Net_STCG': Net short-term capital gains after set-off.
+            - 'Net_LTCG': Net long-term capital gains after set-off.
+            - 'Carry_Forward': Losses to be carried forward to future years.
+    Notes:
+        - Short-term capital loss (STCL) is first set off against STCG, then against LTCG.
+        - Any remaining unadjusted STCL is carried forward.
+        - Only STCL is considered for set-off and carry-forward in this implementation.
+    """
     """Apply tax set-off rules and calculate carry-forward losses"""
     fy_summary = gains_df.groupby(['Financial Year', 'Gain Type'])['Gain'].sum().unstack(fill_value=0)
     
