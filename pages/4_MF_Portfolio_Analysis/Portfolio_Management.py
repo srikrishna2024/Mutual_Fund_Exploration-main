@@ -7,6 +7,7 @@ import io
 import locale
 import decimal
 import plotly.express as px
+from pandas.tseries.offsets import BDay
 
 # Set locale for Indian number formatting
 locale.setlocale(locale.LC_ALL, 'en_IN')
@@ -44,7 +45,6 @@ def check_and_update_goals_schema():
     """Check if goals table exists and has required columns, update if necessary"""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # First, check if table exists
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -54,7 +54,6 @@ def check_and_update_goals_schema():
             table_exists = cur.fetchone()[0]
             
             if not table_exists:
-                # Create table with all required columns
                 cur.execute("""
                     CREATE TABLE goals (
                         id SERIAL PRIMARY KEY,
@@ -68,7 +67,6 @@ def check_and_update_goals_schema():
                     )
                 """)
             else:
-                # Check if is_manual_entry column exists
                 cur.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.columns 
@@ -78,7 +76,6 @@ def check_and_update_goals_schema():
                 has_manual_entry = cur.fetchone()[0]
                 
                 if not has_manual_entry:
-                    # Add is_manual_entry column
                     cur.execute("""
                         ALTER TABLE goals 
                         ADD COLUMN is_manual_entry BOOLEAN DEFAULT FALSE
@@ -179,7 +176,6 @@ def initialize_database():
     """Initialize database views and ensure table structure is correct"""
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            # Update transaction_type constraint
             cursor.execute("""
                 ALTER TABLE portfolio_data 
                 DROP CONSTRAINT IF EXISTS portfolio_data_transaction_type_check;
@@ -191,7 +187,6 @@ def initialize_database():
                 CHECK (transaction_type IN ('invest', 'redeem', 'switch_out', 'switch_in'));
             """)
             
-            # Remove target scheme columns if they exist
             cursor.execute("""
                 ALTER TABLE portfolio_data 
                 DROP COLUMN IF EXISTS target_scheme_code,
@@ -199,7 +194,6 @@ def initialize_database():
             """)
             conn.commit()
             
-            # Create or replace the portfolio_holdings view with corrected calculations
             cursor.execute("""
                 CREATE OR REPLACE VIEW portfolio_holdings AS
                 WITH transaction_summary AS (
@@ -256,7 +250,6 @@ def initialize_database():
             """)
             conn.commit()
             
-            # Check and update goals schema
             check_and_update_goals_schema()
 
 def parse_date(date_str):
@@ -326,7 +319,6 @@ def add_transaction(transaction_type, scheme_code, scheme_name, date,
     """Add a transaction to the database"""
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            # Store absolute values - sign handled in view
             cursor.execute("""
                 INSERT INTO portfolio_data (
                     date, scheme_name, code, transaction_type,
@@ -359,15 +351,207 @@ def parse_number(value):
         return None
 
 def get_portfolio_holdings():
-    """Get current portfolio holdings"""
+    """Get current portfolio holdings with goal names"""
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM portfolio_holdings")
+            cursor.execute("""
+                SELECT 
+                    ph.*,
+                    g.goal_name
+                FROM portfolio_holdings ph
+                LEFT JOIN goals g ON ph.code = g.scheme_code
+                ORDER BY ph.current_value DESC
+            """)
             columns = [desc[0] for desc in cursor.description]
             df = pd.DataFrame(cursor.fetchall(), columns=columns)
             for col in ['current_units', 'latest_nav', 'current_value', 'total_investment']:
                 df[col] = df[col].astype(float).round(2)
             return df
+
+def get_fund_performance():
+    """Get performance metrics for each fund with fallback to latest NAV"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT CURRENT_DATE")
+            current_date = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT code, scheme_name FROM portfolio_holdings")
+            funds = cursor.fetchall()
+            
+            performance_data = []
+            
+            for fund_code, fund_name in funds:
+                cursor.execute("""
+                    SELECT current_value FROM portfolio_holdings WHERE code = %s
+                """, (fund_code,))
+                current_value = cursor.fetchone()[0] or 0
+                
+                def get_historical_fund_value(target_date):
+                    query = """
+                        WITH holdings_at_date AS (
+                            SELECT 
+                                SUM(CASE 
+                                    WHEN transaction_type = 'invest' THEN units 
+                                    WHEN transaction_type = 'redeem' THEN -units 
+                                    WHEN transaction_type = 'switch_out' THEN -units 
+                                    WHEN transaction_type = 'switch_in' THEN units 
+                                    ELSE 0 
+                                END) AS units_held
+                            FROM portfolio_data
+                            WHERE code = %s AND date <= %s
+                        ),
+                        nav_at_date AS (
+                            SELECT value as nav_value
+                            FROM mutual_fund_nav
+                            WHERE code = %s AND nav <= %s
+                            ORDER BY nav DESC
+                            LIMIT 1
+                        )
+                        SELECT 
+                            COALESCE(h.units_held * n.nav_value, 0)
+                        FROM holdings_at_date h, nav_at_date n
+                    """
+                    cursor.execute(query, (fund_code, target_date, fund_code, target_date))
+                    result = cursor.fetchone()[0]
+                    
+                    if result == 0:
+                        cursor.execute("""
+                            SELECT value 
+                            FROM mutual_fund_nav 
+                            WHERE code = %s AND nav < %s
+                            ORDER BY nav DESC 
+                            LIMIT 1
+                        """, (fund_code, target_date))
+                        fallback_nav = cursor.fetchone()
+                        if fallback_nav:
+                            cursor.execute("""
+                                SELECT 
+                                    SUM(CASE 
+                                        WHEN transaction_type = 'invest' THEN units 
+                                        WHEN transaction_type = 'redeem' THEN -units 
+                                        WHEN transaction_type = 'switch_out' THEN -units 
+                                        WHEN transaction_type = 'switch_in' THEN units 
+                                        ELSE 0 
+                                    END)
+                                FROM portfolio_data
+                                WHERE code = %s AND date <= %s
+                            """, (fund_code, target_date))
+                            units = cursor.fetchone()[0] or 0
+                            result = units * fallback_nav[0]
+                    
+                    return result
+                
+                if current_date.weekday() == 0:
+                    prev_day = current_date - BDay(1)
+                else:
+                    prev_day = current_date - BDay(1)
+                
+                daily_value = get_historical_fund_value(prev_day)
+                week_ago = current_date - BDay(7)
+                weekly_value = get_historical_fund_value(week_ago)
+                month_ago = current_date - BDay(30)
+                monthly_value = get_historical_fund_value(month_ago)
+                ytd_date = datetime(current_date.year, 1, 1).date()
+                ytd_value = get_historical_fund_value(ytd_date)
+                
+                cursor.execute("SELECT goal_name FROM goals WHERE scheme_code = %s LIMIT 1", (fund_code,))
+                goal_result = cursor.fetchone()
+                goal_name = goal_result[0] if goal_result else None
+                
+                performance_data.append({
+                    'scheme_name': fund_name,
+                    'code': fund_code,
+                    'goal_name': goal_name,
+                    'current_value': current_value,
+                    'daily_change': current_value - daily_value,
+                    'daily_pct': ((current_value - daily_value) / daily_value * 100) if daily_value != 0 else 0,
+                    'weekly_change': current_value - weekly_value,
+                    'weekly_pct': ((current_value - weekly_value) / weekly_value * 100) if weekly_value != 0 else 0,
+                    'monthly_change': current_value - monthly_value,
+                    'monthly_pct': ((current_value - monthly_value) / monthly_value * 100) if monthly_value != 0 else 0,
+                    'ytd_change': current_value - ytd_value,
+                    'ytd_pct': ((current_value - ytd_value) / ytd_value * 100) if ytd_value != 0 else 0
+                })
+            
+            return pd.DataFrame(performance_data)
+
+def get_performance_metrics():
+    """Get performance metrics (daily, weekly, monthly, YTD returns)"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT CURRENT_DATE")
+            current_date = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT SUM(current_value) FROM portfolio_holdings")
+            current_value = cursor.fetchone()[0] or 0
+            
+            metrics = {
+                'current': current_value,
+                'daily': 0,
+                'weekly': 0,
+                'monthly': 0,
+                'ytd': 0
+            }
+            
+            def get_historical_value(target_date):
+                query = """
+                    WITH holdings_at_date AS (
+                        SELECT 
+                            code,
+                            SUM(CASE 
+                                WHEN transaction_type = 'invest' THEN units 
+                                WHEN transaction_type = 'redeem' THEN -units 
+                                WHEN transaction_type = 'switch_out' THEN -units 
+                                WHEN transaction_type = 'switch_in' THEN units 
+                                ELSE 0 
+                            END) AS units_held
+                        FROM portfolio_data
+                        WHERE date <= %s
+                        GROUP BY code
+                        HAVING SUM(CASE 
+                            WHEN transaction_type = 'invest' THEN units 
+                            WHEN transaction_type = 'redeem' THEN -units 
+                            WHEN transaction_type = 'switch_out' THEN -units 
+                            WHEN transaction_type = 'switch_in' THEN units 
+                            ELSE 0 
+                        END) > 0
+                    ),
+                    nav_at_date AS (
+                        SELECT 
+                            code,
+                            value as nav_value
+                        FROM mutual_fund_nav
+                        WHERE (code, nav) IN (
+                            SELECT code, MAX(nav)
+                            FROM mutual_fund_nav
+                            WHERE nav <= %s
+                            GROUP BY code
+                        )
+                    )
+                    SELECT 
+                        COALESCE(SUM(h.units_held * n.nav_value), 0)
+                    FROM holdings_at_date h
+                    JOIN nav_at_date n ON h.code = n.code
+                """
+                cursor.execute(query, (target_date, target_date))
+                return cursor.fetchone()[0]
+            
+            if current_date.weekday() == 0:
+                prev_day = current_date - BDay(1)
+            else:
+                prev_day = current_date - BDay(1)
+            metrics['daily'] = get_historical_value(prev_day)
+            
+            week_ago = current_date - BDay(7)
+            metrics['weekly'] = get_historical_value(week_ago)
+            
+            month_ago = current_date - BDay(30)
+            metrics['monthly'] = get_historical_value(month_ago)
+            
+            ytd_date = datetime(current_date.year, 1, 1).date()
+            metrics['ytd'] = get_historical_value(ytd_date)
+            
+            return metrics
 
 def get_transaction_history():
     """Get all transactions"""
@@ -445,12 +629,10 @@ def display_goal_dashboard():
     existing_goals = get_existing_goals()
     
     if not existing_goals.empty:
-        # Group by goal and calculate total value
         goal_summary = existing_goals.groupby('goal_name').agg({
             'current_value': 'sum'
         }).reset_index()
         
-        # Display goal summary
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader("Goal-wise Summary")
@@ -469,9 +651,7 @@ def display_goal_dashboard():
                 format_indian_currency(goal_summary['current_value'].sum())
             )
         
-        # Display detailed mappings
         st.subheader("Detailed Mappings")
-        # Format the dataframe for display
         display_df = existing_goals.copy()
         display_df['current_value'] = display_df['current_value'].apply(format_indian_currency)
         display_df['Source'] = display_df['is_manual_entry'].map({True: 'Manual Entry', False: 'Portfolio'})
@@ -485,12 +665,15 @@ def main():
     st.title("Mutual Fund Portfolio Manager")
     
     initialize_database()
+
+    # Get all schemes and portfolio schemes first
     all_schemes = get_scheme_list()
     portfolio_schemes = get_portfolio_schemes()
     
+    # Create dictionaries and name lists
     all_scheme_dict = {f"{s[1]} ({s[0]})": s[0] for s in all_schemes}
     portfolio_scheme_dict = {f"{s[1]} ({s[0]})": s[0] for s in portfolio_schemes}
-    
+
     all_scheme_names = list(all_scheme_dict.keys())
     portfolio_scheme_names = list(portfolio_scheme_dict.keys())
     
@@ -517,7 +700,7 @@ def main():
             col3.metric("Current Value", f"₹{format_indian(total_current)}")
             
             display_df = holdings[[
-                'scheme_name', 'code', 'current_units', 'latest_nav', 
+                'scheme_name', 'code', 'goal_name', 'current_units', 'latest_nav', 
                 'current_value', 'total_investment', 'nav_date'
             ]]
             
@@ -530,74 +713,85 @@ def main():
             
             st.dataframe(styled_df, use_container_width=True)
             
-            st.subheader("Portfolio Allocation")
-            # Get all required data in a single connection block
-            try:
-                with get_db_connection() as conn:
-                    # Get portfolio holdings
-                    holdings = get_portfolio_holdings()
+            st.subheader("Fund Performance Analysis")
+            fund_performance = get_fund_performance()
+            
+            if not fund_performance.empty:
+                def color_negative_red(val):
+                    if isinstance(val, str):
+                        try:
+                            val = float(val.strip('%'))
+                        except:
+                            return ''
+                    color = 'red' if val < 0 else 'green'
+                    return f'color: {color}'
+                
+                # Filter out rows with invalid or zero current_value
+                fund_performance = fund_performance[
+                    (fund_performance['current_value'] > 0) & 
+                    (fund_performance['current_value'].notna())
+                ]
 
-                    # Get investment types from goals table
-                    investment_types = pd.read_sql("""
-                        SELECT DISTINCT scheme_code, investment_type 
-                        FROM goals
-                        WHERE investment_type IN ('Equity', 'Debt')
-                    """, conn)
-            
-                    # Get scheme categories from mutual_fund_master_data
-                    scheme_categories = pd.read_sql("""
-                        SELECT code, scheme_category, scheme_type
-                        FROM mutual_fund_master_data
-                    """, conn)
+                if not fund_performance.empty:
+                    performance_display = fund_performance[[
+                        'scheme_name', 'code', 'goal_name', 'current_value',
+                        'daily_pct', 'weekly_pct','monthly_pct','ytd_pct'
+                    ]].rename(columns={
+                        'scheme_name': 'Scheme',
+                        'code': 'Code',
+                        'goal_name': 'Goal',
+                        'current_value': 'Current Value',
+                        'daily_pct': 'Daily',
+                        'weekly_pct': 'Weekly',
+                        'monthly_pct': 'Monthly',
+                        'ytd_pct': 'YTD'
+                    })
 
-                # Merge with holdings data
-                holdings = holdings.merge(
-                    investment_types,
-                    left_on='code',
-                    right_on='scheme_code',
-                    how='left'
-                ).merge(
-                    scheme_categories,
-                    left_on='code',
-                    right_on='code',
-                    how='left'
-                )
-            except Exception as e:
-                st.error(f"Error loading portfolio allocation data: {e}")
-                holdings['scheme_category'] = 'Other'
-                holdings['scheme_type'] = 'Other'
-
-            # Fill any missing values
-            holdings['investment_type'] = holdings['investment_type'].fillna('Other')
-            holdings['scheme_category'] = holdings['scheme_category'].fillna('Other')
-            holdings['scheme_type'] = holdings['scheme_type'].fillna('Other')
+                    # Calculate dynamic height based on number of rows (max 600px)
+                    num_rows = len(performance_display)
+                    table_height = min(35 + num_rows * 35, 600)  # 35px per row + header
+                    
+                    st.dataframe(
+                        performance_display.style
+                        .applymap(color_negative_red, subset=['Daily', 'Weekly', 'Monthly', 'YTD'])
+                        .format({
+                            'Current Value': lambda x: f"₹{format_indian(x)}",
+                            'Daily': lambda x: f"{x:.2f}%",
+                            'Weekly': lambda x: f"{x:.2f}%",
+                            'Monthly': lambda x: f"{x:.2f}%",
+                            'YTD': lambda x: f"{x:.2f}%"
+                        }),
+                        column_order=["Scheme", "Code", "Goal", "Current Value", "Daily", "Weekly", "Monthly", "YTD"],
+                        use_container_width=True,
+                        height=table_height,
+                        hide_index=True
+                    )
             
-            # Create sunburst visualization
-            fig = px.sunburst(
-                holdings,
-                path=['investment_type', 'scheme_category', 'scheme_name'],
-                values='current_value',
-                color='investment_type',
-                color_discrete_map={
-                    'Equity': '#1f77b4',
-                    'Debt': '#ff7f0e',
-                    'Other': '#2ca02c'
-                },
-                title='Portfolio Allocation by Investment Type and Category',
-                hover_data=['current_value']
-            )
+            st.subheader("Recent Performance Insights")
+            perf_metrics = get_performance_metrics()
+            current_value = perf_metrics['current']
             
-            fig.update_traces(
-                textinfo="label+percent parent",
-                texttemplate="%{label}<br>₹%{value:,.2f}",
-                hovertemplate="<b>%{label}</b><br>Value: ₹%{value:,.2f}<extra></extra>"
+            cols = st.columns(4)
+            cols[0].metric(
+                "Daily Change", 
+                f"₹{format_indian(current_value - perf_metrics['daily'])}", 
+                f"{((current_value - perf_metrics['daily'])/perf_metrics['daily']*100) if perf_metrics['daily'] != 0 else 0:.2f}%"
             )
-            
-            fig.update_layout(
-                margin=dict(t=40, l=0, r=0, b=0),
-                height=600
+            cols[1].metric(
+                "Weekly Change",
+                f"₹{format_indian(current_value - perf_metrics['weekly'])}",
+                f"{((current_value - perf_metrics['weekly'])/perf_metrics['weekly']*100) if perf_metrics['weekly'] != 0 else 0:.2f}%"
             )
-            st.plotly_chart(fig, use_container_width=True)
+            cols[2].metric(
+                "Monthly Change",
+                f"₹{format_indian(current_value - perf_metrics['monthly'])}",
+                f"{((current_value - perf_metrics['monthly'])/perf_metrics['monthly']*100) if perf_metrics['monthly'] != 0 else 0:.2f}%"
+            )
+            cols[3].metric(
+                "YTD Change",
+                f"₹{format_indian(current_value - perf_metrics['ytd'])}",
+                f"{((current_value - perf_metrics['ytd'])/perf_metrics['ytd']*100) if perf_metrics['ytd'] != 0 else 0:.2f}%"
+            )
         
         st.subheader("Transaction History")
         transactions = get_transaction_history()
@@ -613,7 +807,7 @@ def main():
             )
         else:
             st.info("No transactions found.")
-    
+
     with tab2:
         st.header("Add New Investment")
         with st.form("investment_form"):
@@ -777,14 +971,12 @@ def main():
                 goal_name = st.text_input("Goal Name")
                 investment_type = st.selectbox("Investment Type", ["Equity", "Debt"])
                 
-                # Create scheme selection dropdown with current values
                 scheme_options = portfolio_df.apply(
                     lambda x: f"{x['scheme_name']} ({format_indian_currency(x['current_value'])})", 
                     axis=1
                 ).tolist()
                 selected_scheme = st.selectbox("Select Fund", scheme_options)
                 
-                # Extract scheme details from selection
                 if selected_scheme:
                     scheme_name = selected_scheme.split(" (₹")[0]
                     scheme_details = portfolio_df[portfolio_df['scheme_name'] == scheme_name].iloc[0]
@@ -794,7 +986,6 @@ def main():
                 submitted = st.form_submit_button("Map to Goal")
                 
                 if submitted and goal_name and investment_type and selected_scheme:
-                    # Check if fund is already mapped
                     existing_goal = check_existing_mapping(scheme_name, scheme_code)
                     if existing_goal:
                         st.error(f"This fund is already mapped to goal: {existing_goal}")
@@ -811,7 +1002,6 @@ def main():
                         else:
                             st.error("Failed to map investment to goal. Please try again.")
         
-        # Display goal dashboard below the form
         display_goal_dashboard()
 
     with tab7:
@@ -831,12 +1021,11 @@ def main():
             manual_submitted = st.form_submit_button("Add Investment")
             
             if manual_submitted and manual_goal_name and manual_scheme_description and manual_amount > 0:
-                # For manual entries: scheme_name is the investment type, scheme_code is 9999
                 insert_success = insert_goal_mapping(
                     manual_goal_name,
-                    "Debt",  # Fixed as Debt for all manual entries
-                    manual_scheme_type,  # Use the investment type as scheme_name
-                    "9999",  # Fixed scheme_code for manual debt instruments
+                    "Debt",
+                    manual_scheme_type,
+                    "9999",
                     manual_amount,
                     is_manual_entry=True
                 )
@@ -845,7 +1034,6 @@ def main():
                 else:
                     st.error("Failed to add investment. Please try again.")
         
-        # Display goal dashboard below the form
         display_goal_dashboard()
 
 if __name__ == "__main__":
