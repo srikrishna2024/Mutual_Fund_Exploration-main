@@ -1,11 +1,22 @@
-[2025-07-10 18:13:48] Updated 0 records for scheme: ICICI Prudential Large & Mid Cap Fund - Direct Plan - Growth (Code: 120596)
-[2025-07-10 18:13:48] Updated 0 records for scheme: Nippon India Growth Fund - Direct Plan Growth Plan - Growth Option (Code: 118668)
-[2025-07-10 18:13:49] Updated 0 records for scheme: ICICI Pru Equity & Debt Dir-G (Code: 120251)
-[2025-07-10 18:13:49] Updated 0 records for scheme: Parag Parikh Liquid Fund- Direct Plan- Growth (Code: 143269)
-[2025-07-10 18:13:50] Updated 0 records for scheme: DSP Value Fund - Direct Plan - Growth (Code: 148595)
-[2025-07-10 18:13:50] Updated 0 records for scheme: Parag Parikh Conservative Hybrid Fund - Direct Plan - Growth (Code: 148958)
-[2025-07-10 18:13:51] Updated 1 records for scheme: Parag Parikh Flexi Cap Dir-G (Code: 122639)
-[2025-07-10 18:13:52] Updated 0 records for scheme: ICICI Prudential Money Market Fund Option - Direct Plan -  Growth (Code: 120211)
-[2025-07-10 18:13:53] Updated 0 records for scheme: Nippon India Large Cap Fund - Direct Plan Growth Plan - Growth Option (Code: 118632)
-[2025-07-10 18:13:53] Total NAV records updated: 1
-[2025-07-10 18:13:53] NAV update completed.
+[2025-07-10 19:28:23] Starting NAV update process
+[2025-07-10 19:28:31] Processing batch 1/1
+[2025-07-10 19:28:31] Processing scheme: 120596 - ICICI Pru Large & Mid Cap Dir-G
+[2025-07-10 19:28:32] Updated 0 records for ICICI Pru Large & Mid Cap Dir-G (120596)
+[2025-07-10 19:28:32] Processing scheme: 118668 - Nippon India Growth Dir-G
+[2025-07-10 19:28:33] Updated 0 records for Nippon India Growth Dir-G (118668)
+[2025-07-10 19:28:33] Processing scheme: 120251 - ICICI Pru Equity & Debt Dir-G
+[2025-07-10 19:28:34] Updated 0 records for ICICI Pru Equity & Debt Dir-G (120251)
+[2025-07-10 19:28:34] Processing scheme: 143269 - Parag Parikh Liquid Fund- Direct Plan- Growth
+[2025-07-10 19:28:35] Updated 0 records for Parag Parikh Liquid Fund- Direct Plan- Growth (143269)
+[2025-07-10 19:28:35] Processing scheme: 148595 - DSP Value Fund - Direct Plan - Growth
+[2025-07-10 19:28:36] Updated 0 records for DSP Value Fund - Direct Plan - Growth (148595)
+[2025-07-10 19:28:36] Processing scheme: 148958 - Parag Parikh Conservative Hybrid Fund - Direct Plan - Growth
+[2025-07-10 19:28:37] Updated 0 records for Parag Parikh Conservative Hybrid Fund - Direct Plan - Growth (148958)
+[2025-07-10 19:28:37] Processing scheme: 122639 - Parag Parikh Flexi Cap Dir-G
+[2025-07-10 19:28:38] Updated 0 records for Parag Parikh Flexi Cap Dir-G (122639)
+[2025-07-10 19:28:38] Processing scheme: 120211 - ICICI Prudential Money Market Fund Option - Direct Plan -  Growth
+[2025-07-10 19:28:40] Updated 0 records for ICICI Prudential Money Market Fund Option - Direct Plan -  Growth (120211)
+[2025-07-10 19:28:40] Processing scheme: 118632 - Nippon India Large Cap Dir-G
+[2025-07-10 19:28:41] Updated 0 records for Nippon India Large Cap Dir-G (118632)
+[2025-07-10 19:28:41] Total NAV records updated: 0
+[2025-07-10 19:28:41] NAV update completed successfully
