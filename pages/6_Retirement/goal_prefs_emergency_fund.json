@@ -1,0 +1,8 @@
+{
+    "monthly_expenses": 45000,
+    "months_needed": 6,
+    "inflation": 6.0,
+    "debt_return": 6.2,
+    "current_debt": 349995.06,
+    "auto_load": true
+}

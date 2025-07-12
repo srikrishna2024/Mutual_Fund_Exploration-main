@@ -1,0 +1,12 @@
+{
+    "goal_amount": 6000000,
+    "years_to_goal": 13,
+    "equity_return": 10.0,
+    "debt_return": 6.0,
+    "current_equity": 2554156.218627999,
+    "current_debt": 1150000.02,
+    "inflation": 6.0,
+    "annual_increase": 5.0,
+    "auto_load": true,
+    "current_goal_value": 3000000
+}
