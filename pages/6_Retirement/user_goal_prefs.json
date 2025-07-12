@@ -1,0 +1,13 @@
+{
+    "goals": {
+        "Child Education": {
+            "target_amount": 6000000,
+            "target_year": 2037,
+            "current_age": 37,
+            "equity_return": 10.0,
+            "debt_return": 6.0,
+            "equity_increase_pct": 5.0,
+            "debt_increase_pct": 3.0
+        }
+    }
+}
